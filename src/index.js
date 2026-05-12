@@ -64,7 +64,7 @@ app.post('/checkout', async (req, res) => {
       // Assinatura recorrente: 12 cobranças mensais (contrato anual mensal)
       const body = {
         reason: plan.title,
-        back_url: `${siteUrl}?pagamento=sucesso`,
+        back_url: `${siteUrl}/obrigado.html?plan=${planId}&billing=mensal`,
         auto_recurring: {
           frequency: 1,
           frequency_type: 'months',
@@ -103,7 +103,7 @@ app.post('/checkout', async (req, res) => {
           unit_price: plan.price,
         }],
         back_urls: {
-          success: `${siteUrl}?pagamento=sucesso`,
+          success: `${siteUrl}/obrigado.html?plan=${planId}&billing=anual`,
           failure: `${siteUrl}?pagamento=falha`,
           pending: `${siteUrl}?pagamento=pendente`,
         },
