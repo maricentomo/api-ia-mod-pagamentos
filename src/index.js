@@ -57,44 +57,79 @@ app.post('/checkout', async (req, res) => {
 
   const plan = PLANS[planId][billing];
   const siteUrl = process.env.SITE_URL || 'https://iamod.com.br';
-
-  const preference = {
-    items: [
-      {
-        title: plan.title,
-        description: plan.description,
-        quantity: 1,
-        currency_id: 'BRL',
-        unit_price: plan.price,
-      },
-    ],
-    back_urls: {
-      success: `${siteUrl}?pagamento=sucesso`,
-      failure: `${siteUrl}?pagamento=falha`,
-      pending: `${siteUrl}?pagamento=pendente`,
-    },
-    auto_return: 'approved',
-    statement_descriptor: 'IA MOD',
-  };
+  const token = process.env.MERCADO_PAGO_ACCESS_TOKEN;
 
   try {
-    const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.MERCADO_PAGO_ACCESS_TOKEN}`,
-      },
-      body: JSON.stringify(preference),
-    });
+    if (billing === 'mensal') {
+      // Assinatura recorrente: 12 cobranças mensais (contrato anual mensal)
+      const body = {
+        reason: plan.title,
+        back_url: `${siteUrl}?pagamento=sucesso`,
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: 'months',
+          repetitions: 12,
+          transaction_amount: plan.price,
+          currency_id: 'BRL',
+        },
+      };
 
-    const mpData = await mpRes.json();
+      const mpRes = await fetch('https://api.mercadopago.com/preapproval_plan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!mpRes.ok) {
-      console.error('Erro MP:', mpData);
-      return res.status(500).json({ error: 'Erro ao criar preferência no Mercado Pago.' });
+      const mpData = await mpRes.json();
+
+      if (!mpRes.ok) {
+        console.error('Erro MP preapproval_plan:', mpData);
+        return res.status(500).json({ error: 'Erro ao criar assinatura no Mercado Pago.' });
+      }
+
+      res.json({ init_point: mpData.init_point });
+
+    } else {
+      // Pagamento único à vista (contrato anual)
+      const preference = {
+        items: [{
+          title: plan.title,
+          description: plan.description,
+          quantity: 1,
+          currency_id: 'BRL',
+          unit_price: plan.price,
+        }],
+        back_urls: {
+          success: `${siteUrl}?pagamento=sucesso`,
+          failure: `${siteUrl}?pagamento=falha`,
+          pending: `${siteUrl}?pagamento=pendente`,
+        },
+        auto_return: 'approved',
+        statement_descriptor: 'IA MOD',
+      };
+
+      const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(preference),
+      });
+
+      const mpData = await mpRes.json();
+
+      if (!mpRes.ok) {
+        console.error('Erro MP preferences:', mpData);
+        return res.status(500).json({ error: 'Erro ao criar preferência no Mercado Pago.' });
+      }
+
+      res.json({ init_point: mpData.init_point });
     }
 
-    res.json({ init_point: mpData.init_point });
   } catch (err) {
     console.error('Erro ao chamar MP:', err);
     res.status(500).json({ error: 'Erro interno.' });
