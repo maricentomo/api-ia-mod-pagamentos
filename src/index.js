@@ -1,38 +1,62 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const { google } = require('googleapis');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const SPREADSHEET_ID = '1Ob3_WW_oprXPWkJ-4_z2ac4OneKOAqyAFnDRLSyNh1o';
 
 const allowedOrigins = [
   'https://iamod.com.br',
   'https://www.iamod.com.br',
 ];
-
 if (process.env.NODE_ENV !== 'production') {
   allowedOrigins.push('http://localhost:3000', 'http://localhost:5500', 'http://127.0.0.1:5500');
 }
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS bloqueado para origin: ${origin}`));
-    }
+    if (!origin || allowedOrigins.includes(origin)) callback(null, true);
+    else callback(new Error(`CORS bloqueado para origin: ${origin}`));
   },
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-
 app.use(express.json());
 
-app.get('/health', (req, res) => {
-  res.json({ ok: true });
-});
+// ── Google Sheets ──────────────────────────────
+const getSheets = () => {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON não configurado');
+  const credentials = JSON.parse(raw);
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+  return google.sheets({ version: 'v4', auth });
+};
 
-// Preços dos planos — fonte única da verdade
+const saveToSheet = async (sheetName, row) => {
+  try {
+    const sheets = getSheets();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${sheetName}!A:I`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [row] },
+    });
+    console.log(`Salvo na aba "${sheetName}":`, row[1], row[2]);
+  } catch (err) {
+    console.error('Erro ao salvar na planilha:', err.message);
+  }
+};
+
+const now = () => {
+  return new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+};
+
+// ── Planos ─────────────────────────────────────
 const PLANS = {
   essencial: {
     mensal: { title: 'Essencial Mensal',  price: 97,   description: '12x de R$ 97 — Plano Essencial (contrato anual mensal)' },
@@ -51,8 +75,15 @@ const PLANS = {
   },
 };
 
+const SHEET_NAME = (planId) => planId === 'brandkit' ? 'Brand Kit' : 'Agenda';
+const BILLING_LABEL = { mensal: 'Mensal', anual: 'Anual à vista', avista: 'À vista' };
+
+// ── Health ─────────────────────────────────────
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+// ── Checkout ───────────────────────────────────
 app.post('/checkout', async (req, res) => {
-  const { planId, billing } = req.body;
+  const { planId, billing, customer = {} } = req.body;
 
   if (!planId || !billing || !PLANS[planId] || !PLANS[planId][billing]) {
     return res.status(400).json({ error: 'Plano ou modalidade inválidos.' });
@@ -63,8 +94,10 @@ app.post('/checkout', async (req, res) => {
   const token = process.env.MERCADO_PAGO_ACCESS_TOKEN;
 
   try {
+    let initPoint = null;
+    let pedidoId = null;
+
     if (billing === 'mensal') {
-      // Assinatura recorrente: 12 cobranças mensais (contrato anual mensal)
       const body = {
         reason: plan.title,
         back_url: `${siteUrl}/obrigado.html?plan=${planId}&billing=mensal`,
@@ -79,32 +112,20 @@ app.post('/checkout', async (req, res) => {
 
       const mpRes = await fetch('https://api.mercadopago.com/preapproval_plan', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(body),
       });
-
       const mpData = await mpRes.json();
-
       if (!mpRes.ok) {
         console.error('Erro MP preapproval_plan:', mpData);
         return res.status(500).json({ error: 'Erro ao criar assinatura no Mercado Pago.' });
       }
-
-      res.json({ init_point: mpData.init_point });
+      initPoint = mpData.init_point;
+      pedidoId = mpData.id || '';
 
     } else {
-      // Pagamento único à vista (contrato anual)
       const preference = {
-        items: [{
-          title: plan.title,
-          description: plan.description,
-          quantity: 1,
-          currency_id: 'BRL',
-          unit_price: plan.price,
-        }],
+        items: [{ title: plan.title, description: plan.description, quantity: 1, currency_id: 'BRL', unit_price: plan.price }],
         back_urls: {
           success: `${siteUrl}/obrigado.html?plan=${planId}&billing=${billing}`,
           failure: `${siteUrl}?pagamento=falha`,
@@ -116,22 +137,33 @@ app.post('/checkout', async (req, res) => {
 
       const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(preference),
       });
-
       const mpData = await mpRes.json();
-
       if (!mpRes.ok) {
         console.error('Erro MP preferences:', mpData);
         return res.status(500).json({ error: 'Erro ao criar preferência no Mercado Pago.' });
       }
-
-      res.json({ init_point: mpData.init_point });
+      initPoint = mpData.init_point;
+      pedidoId = mpData.id || '';
     }
+
+    // Salva na planilha
+    const row = [
+      now(),
+      customer.name  || '',
+      customer.email || '',
+      customer.phone || '',
+      plan.title,
+      `R$ ${plan.price.toLocaleString('pt-BR')}`,
+      BILLING_LABEL[billing] || billing,
+      'Pendente',
+      pedidoId,
+    ];
+    await saveToSheet(SHEET_NAME(planId), row);
+
+    res.json({ init_point: initPoint });
 
   } catch (err) {
     console.error('Erro ao chamar MP:', err);
@@ -139,6 +171,4 @@ app.post('/checkout', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`API IA Mod rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`API IA Mod rodando na porta ${PORT}`));
