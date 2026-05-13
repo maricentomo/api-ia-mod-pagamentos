@@ -46,6 +46,9 @@ const PLANS = {
     mensal: { title: 'Completo Mensal',   price: 247,  description: '12x de R$ 247 — Plano Completo (contrato anual mensal)' },
     anual:  { title: 'Completo Anual',    price: 2470, description: 'R$ 2.470 à vista — Plano Completo (contrato anual)' },
   },
+  brandkit: {
+    avista: { title: 'Brand Kit Completo', price: 700, description: 'Brand Kit Completo — Logo, cores, fontes, mascote, pack Canva e artes para gráfica' },
+  },
 };
 
 app.post('/checkout', async (req, res) => {
@@ -103,7 +106,7 @@ app.post('/checkout', async (req, res) => {
           unit_price: plan.price,
         }],
         back_urls: {
-          success: `${siteUrl}/obrigado.html?plan=${planId}&billing=anual`,
+          success: `${siteUrl}/obrigado.html?plan=${planId}&billing=${billing}`,
           failure: `${siteUrl}?pagamento=falha`,
           pending: `${siteUrl}?pagamento=pendente`,
         },
